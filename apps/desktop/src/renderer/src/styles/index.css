@@ -1,0 +1,93 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-canvas-bg: #0b0b0f;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    'Inter',
+    'Segoe UI',
+    sans-serif;
+}
+
+/*
+ * React Flow ships default styles for `.react-flow__node` (white background,
+ * 1px border, padding, box-shadow). Our custom node components render their
+ * own chrome inside that wrapper, so the defaults bleed through:
+ *  - GroupNode shows a white rim around its colored border
+ *  - The note/repo node wrappers add extra spacing
+ *
+ * Reset all of that for the three custom kinds we use. Selection rings and
+ * resize handles still work because those are drawn inside our own JSX.
+ */
+.react-flow__node-group,
+.react-flow__node-note,
+.react-flow__node-repo {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* The default selected ring around .react-flow__node also overlaps the colored
+ * group border. We draw our own selected state in the custom components, so
+ * suppress the wrapper's. */
+.react-flow__node-group.selected,
+.react-flow__node-note.selected,
+.react-flow__node-repo.selected {
+  box-shadow: none !important;
+}
+
+/*
+ * Custom scrollbars — match the zinc-on-near-black palette used throughout
+ * the app instead of the OS default. WebKit (Electron's renderer) honors
+ * `::-webkit-scrollbar`; Firefox would use the `scrollbar-*` properties.
+ *
+ * The scrollbar track is transparent so it blends into whatever surface
+ * the scrolling element sits on. The thumb is a translucent zinc that
+ * lifts on hover. Corners (where two scrollbars meet) get the same
+ * transparent treatment.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(113, 113, 122, 0.4) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(113, 113, 122, 0.4);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(161, 161, 170, 0.6);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: rgba(212, 212, 216, 0.7);
+  background-clip: padding-box;
+}

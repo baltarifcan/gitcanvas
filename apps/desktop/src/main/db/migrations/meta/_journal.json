@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1775721346842,
+      "tag": "0000_equal_blacklash",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1775784000000,
+      "tag": "0001_remove_github_add_annotations",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1775870000000,
+      "tag": "0002_chains",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1775880000000,
+      "tag": "0003_chain_address_pattern",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1775890000000,
+      "tag": "0004_repo_lists",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build outputs
+dist
+out
+build
+.turbo
+*.tsbuildinfo
+
+# Electron packaging
+release
+app-builds
+
+# Drizzle
+drizzle/meta/_journal.json.bak
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea
+
+# Coverage
+coverage
+.nyc_output
+
+# Local app data (dev)
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Local-only working directory — emergency DB backups, scratch files, etc.
+ignored
+
+# AI assistant data
+.claude

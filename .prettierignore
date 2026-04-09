@@ -1,0 +1,7 @@
+node_modules
+dist
+out
+build
+.turbo
+pnpm-lock.yaml
+apps/desktop/src/main/db/migrations

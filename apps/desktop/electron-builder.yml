@@ -1,0 +1,49 @@
+appId: com.gitcanvas.app
+productName: GitCanvas
+copyright: Copyright © 2026
+# Pinned because pnpm hoists electron to the workspace root, where
+# electron-builder's auto-detection can't see it from apps/desktop's
+# package.json scope. Bump in lockstep with the dep.
+electronVersion: 41.2.0
+directories:
+  buildResources: resources
+  output: release/${version}
+files:
+  - "out/**/*"
+  - "package.json"
+  - "!**/*.{md,markdown,map,ts,tsx}"
+  - "!**/.*"
+asar: true
+asarUnpack:
+  - "**/*.node"
+extraResources:
+  # Drizzle reads migration SQL files at runtime via the path returned by
+  # `resolveMigrationsFolder()` in `main/db/client.ts`. In packaged builds
+  # that path is `process.resourcesPath/migrations`, so we copy them out of
+  # source into Contents/Resources/migrations on the assembled .app.
+  - from: "src/main/db/migrations"
+    to: "migrations"
+    filter:
+      - "**/*"
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+  extendInfo:
+    NSAppleEventsUsageDescription: GitCanvas needs to launch helper apps to open repos.
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+publish: null

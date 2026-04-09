@@ -1,0 +1,17 @@
+{
+  "extends": "@gitcanvas/tsconfig/react.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@renderer/*": [
+        "src/renderer/src/*"
+      ]
+    },
+    "baseUrl": "."
+  },
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "src/renderer/src/env.d.ts"
+  ]
+}

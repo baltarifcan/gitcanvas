@@ -1,0 +1,21 @@
+{
+  "extends": "@gitcanvas/tsconfig/node.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [
+      "node",
+      "electron-vite/node"
+    ],
+    "paths": {
+      "@main/*": [
+        "src/main/*"
+      ]
+    },
+    "baseUrl": "."
+  },
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "electron.vite.config.ts"
+  ]
+}

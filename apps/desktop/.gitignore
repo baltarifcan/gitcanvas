@@ -1,0 +1,4 @@
+out
+release
+*.tsbuildinfo
+.env.local
