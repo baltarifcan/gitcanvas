@@ -1,10 +1,13 @@
 import { useState, useMemo } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
+import { useQueryClient } from '@tanstack/react-query'
 import { Check, GitBranch, Search, X } from 'lucide-react'
 import clsx from 'clsx'
 import type { BoardNode, Position, Repo } from '@gitcanvas/shared'
 import { useRepos } from './useRepos'
 import { useAddRepoNode } from '@renderer/features/canvas/useBoardNodes'
+import { recordNodeCreate } from '@renderer/features/canvas/historyActions'
+import { getBoardHistory } from '@renderer/features/canvas/boardHistory'
 
 type Props = {
   open: boolean
@@ -29,6 +32,7 @@ export function RepoLibraryDialog({
 }: Props) {
   const repos = useRepos()
   const addRepoNode = useAddRepoNode()
+  const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
@@ -65,6 +69,11 @@ export function RepoLibraryDialog({
     const ids = Array.from(selected)
     // Sequential — IPC is local and we want stable ordering. Each successful
     // add immediately materializes on the canvas via `onAdded`.
+    //
+    // Wrap the whole multi-add in a single history batch so one undo
+    // removes every repo the user just dragged in.
+    const history = getBoardHistory(boardId)
+    history.beginBatch(ids.length > 1 ? `Add ${ids.length} repo nodes` : 'Add repo node')
     for (let i = 0; i < ids.length; i++) {
       const col = i % COLUMNS
       const row = Math.floor(i / COLUMNS)
@@ -77,7 +86,9 @@ export function RepoLibraryDialog({
         },
       })
       onAdded(node)
+      recordNodeCreate(qc, node)
     }
+    history.commitBatch()
     reset()
     onOpenChange(false)
   }

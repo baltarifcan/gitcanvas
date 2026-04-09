@@ -1,13 +1,16 @@
 import { memo, useEffect, useState } from 'react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
+import { useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { useUpdateNode } from '@renderer/features/canvas/useBoardNodes'
+import { getCachedNode, recordNodeUpdate } from '@renderer/features/canvas/historyActions'
 import { useCanvasContext } from '@renderer/features/canvas/CanvasContext'
 import type { NoteFlowNode } from '@renderer/features/canvas/nodeMapping'
 
 function NoteNodeImpl({ id, data, selected }: NodeProps<NoteFlowNode>) {
   const updateNode = useUpdateNode()
-  const { updateLocalNodeData, exportMode } = useCanvasContext()
+  const qc = useQueryClient()
+  const { boardId, updateLocalNodeData, exportMode } = useCanvasContext()
   const [content, setContent] = useState(data.content)
 
   // Re-sync if the source-of-truth content changes externally (e.g. cache refetch).
@@ -18,8 +21,12 @@ function NoteNodeImpl({ id, data, selected }: NodeProps<NoteFlowNode>) {
   const save = () => {
     if (content === data.content) return
     const newData = { content }
+    const before = getCachedNode(qc, boardId, id)?.data
     updateLocalNodeData(id, newData)
     updateNode.mutate({ id, patch: { data: newData } })
+    if (before !== undefined) {
+      recordNodeUpdate(qc, boardId, id, { data: before }, { data: newData }, 'Edit note')
+    }
   }
 
   return (

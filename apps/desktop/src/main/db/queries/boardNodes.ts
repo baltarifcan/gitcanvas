@@ -237,6 +237,43 @@ export function deleteBoardNode(id: string): void {
   touchBoard(row.boardId, new Date().toISOString())
 }
 
+/**
+ * Insert a node verbatim — same id, createdAt, size, parentId, sourceListId,
+ * data, zIndex, etc. The renderer's undo system uses this to restore a
+ * just-deleted node (or to redo a previously-undone create) without losing
+ * any per-instance configuration.
+ *
+ * `updatedAt` is bumped to "now" so sidebar ordering still reflects the
+ * recent activity, but `createdAt` is preserved to keep the canvas's
+ * createdAt-based ordering stable.
+ */
+export function restoreBoardNode(node: BoardNode): BoardNode {
+  const db = getDb()
+  const now = new Date().toISOString()
+
+  db.insert(boardNodes)
+    .values({
+      id: node.id,
+      boardId: node.boardId,
+      kind: node.kind,
+      repoId: node.kind === 'repo' ? node.repoId : null,
+      sourceListId: node.kind === 'repo' ? (node.sourceListId ?? null) : null,
+      parentId: node.parentId ?? null,
+      x: node.position.x,
+      y: node.position.y,
+      width: node.size.width,
+      height: node.size.height,
+      zIndex: node.zIndex,
+      data: node.data as Record<string, unknown>,
+      createdAt: node.createdAt,
+      updatedAt: now,
+    })
+    .run()
+
+  touchBoard(node.boardId, now)
+  return getBoardNodeOrThrow(node.id)
+}
+
 function getBoardNodeOrThrow(id: string): BoardNode {
   const node = getBoardNode(id)
   if (!node) {

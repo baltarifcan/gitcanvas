@@ -21,6 +21,7 @@ Built with Electron + React + React Flow + SQLite. pnpm monorepo. macOS-first.
 - **Annotations** — attach **domains** (`example.com`, with environment label) and **smart contracts** (chain + address + name) to a repo, optionally scoped to a specific branch — designed for tracking deployments across web2 and web3 stacks
 - **Configurable chains** — manage the EVM chain list (name, address pattern, explorer URL template) from Settings
 - **Drag-into-group** — visual drop targets when nesting repos/notes into groups
+- **Undo / redo** — per-board history covering creates, deletes, moves, resizes, re-parenting, group layout / color changes, and inline edits; ⌘Z / ⌘⇧Z, scoped to the active board, defers to native text undo while editing notes
 - **Export** — render the entire board as a PNG or SVG image
 - **SQLite backups** — create, restore, and delete database snapshots from the Settings dialog
 
@@ -61,6 +62,8 @@ pnpm --filter @gitcanvas/desktop dist       # produces a signed-able DMG
 ## Keyboard shortcuts
 
 - **⌘B** — Toggle sidebar
+- **⌘Z** — Undo last board change (per active board)
+- **⌘⇧Z** — Redo
 - **Backspace / Delete** — Delete selected node(s) on the canvas
 
 ## Database

@@ -12,11 +12,13 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import type {
+  BoardNode,
   BoardWithNodes,
   GroupLayoutMode,
   GroupNodeData,
   Position,
   Repo,
+  UpdateNodePatch,
 } from '@gitcanvas/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@renderer/lib/api'
@@ -29,6 +31,13 @@ import { NodeContextMenu, type NodeContextMenuState, type NodeContextAction } fr
 import { RepoNodeConfigDialog } from './RepoNodeConfigDialog'
 import { ColorPickerPopover } from './ColorPickerPopover'
 import { repoKey, useSetRepoArchived } from '@renderer/features/repos/useRepos'
+import { boardKey } from '@renderer/features/boards/useBoards'
+import { getBoardHistory, useAfterHistoryApply } from './boardHistory'
+import {
+  getCachedNode,
+  recordNodeDelete,
+  recordNodeUpdate,
+} from './historyActions'
 
 /**
  * React Flow requires that parent nodes appear before their children in the
@@ -164,6 +173,50 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
   const qc = useQueryClient()
   const rf = useReactFlow<GitcanvasFlowNode>()
 
+  // After an undo or redo lands, the per-board mutation hooks have already
+  // patched the React Query cache — but the Canvas's local React Flow state
+  // is its own copy, so we need to re-pull from the cache and replace the
+  // local nodes. We deliberately bypass the `[board.id, syncToken]` resync
+  // path because that's controlled by BoardView and only fires when the
+  // node id set changes; undoing a position-only move wouldn't trip it.
+  useAfterHistoryApply(
+    board.id,
+    useCallback(() => {
+      const fresh = qc.getQueryData<BoardWithNodes>(boardKey(board.id))
+      if (!fresh) return
+      setNodes(fresh.nodes.map(boardNodeToFlowNode))
+    }, [qc, board.id]),
+  )
+
+  /**
+   * Build an `UpdateNodePatch` representing the persisted state of a node
+   * (i.e. the BEFORE half of an update command). Reads from the React Query
+   * cache, which lags one beat behind the in-flight Canvas state during
+   * drags / resizes — exactly what we want for undo capture.
+   *
+   * The `fields` array names which slots to copy. Callers only ask for the
+   * slots they're about to mutate so the inverse patch is minimal.
+   */
+  const snapshotPatch = useCallback(
+    (
+      nodeId: string,
+      fields: ReadonlyArray<'position' | 'size' | 'parentId' | 'data' | 'zIndex'>,
+    ): UpdateNodePatch | null => {
+      const cached = getCachedNode(qc, board.id, nodeId)
+      if (!cached) return null
+      const patch: UpdateNodePatch = {}
+      for (const f of fields) {
+        if (f === 'position') patch.position = cached.position
+        else if (f === 'size') patch.size = cached.size
+        else if (f === 'parentId') patch.parentId = cached.parentId
+        else if (f === 'data') patch.data = cached.data
+        else if (f === 'zIndex') patch.zIndex = cached.zIndex
+      }
+      return patch
+    },
+    [qc, board.id],
+  )
+
   // Used by NoteNode/GroupNode to update their own `data` after inline edits
   // — keeps local React Flow state in sync with what the user just typed,
   // since we never re-hydrate from the cache mid-session.
@@ -178,13 +231,14 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
 
   const ctxValue: CanvasContextValue = useMemo(
     () => ({
+      boardId: board.id,
       updateLocalNodeData,
       highlightedGroupId,
       renamingGroupId,
       clearRenamingGroupId: () => setRenamingGroupId(null),
       exportMode,
     }),
-    [updateLocalNodeData, highlightedGroupId, renamingGroupId, exportMode],
+    [board.id, updateLocalNodeData, highlightedGroupId, renamingGroupId, exportMode],
   )
 
   // Listen for the export menu's request to flip into static-render mode.
@@ -543,6 +597,11 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
   const handleNodesChange = useCallback(
     (changes: NodeChange<GitcanvasFlowNode>[]) => {
       let resizeFinished = false
+      // Resize-end fans out into multiple updateNode calls (the resized
+      // node + every group it forces a refit on). Wrap them in a single
+      // batch so undo reverses the whole gesture in one keystroke.
+      const history = getBoardHistory(board.id)
+      let batchOpen = false
       setNodes((curr) => {
         let next = applyNodeChanges(changes, curr)
 
@@ -556,16 +615,22 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
             resizeFinished = true
             const updated = next.find((n) => n.id === change.id)
             if (!updated) continue
-            updateNode.mutate({
-              id: change.id,
-              patch: {
-                position: updated.position,
-                size: {
-                  width: change.dimensions.width,
-                  height: change.dimensions.height,
-                },
+            // Capture pre-resize state from the React Query cache (which is
+            // still on the last persisted size since no IPC has fired yet).
+            const before = snapshotPatch(change.id, ['position', 'size'])
+            const after: UpdateNodePatch = {
+              position: updated.position,
+              size: {
+                width: change.dimensions.width,
+                height: change.dimensions.height,
               },
-            })
+            }
+            if (!batchOpen) {
+              history.beginBatch('Resize node')
+              batchOpen = true
+            }
+            updateNode.mutate({ id: change.id, patch: after })
+            if (before) recordNodeUpdate(qc, board.id, change.id, before, after, 'Resize node')
           }
         }
 
@@ -578,17 +643,28 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
           if (fit.changes.length > 0) {
             next = fit.nodes
             for (const c of fit.changes) {
-              updateNode.mutate({
-                id: c.id,
-                patch: { position: c.position, size: c.size },
-              })
+              const fitBefore = snapshotPatch(
+                c.id,
+                [
+                  ...(c.position ? (['position'] as const) : []),
+                  ...(c.size ? (['size'] as const) : []),
+                ],
+              )
+              const fitAfter: UpdateNodePatch = {}
+              if (c.position) fitAfter.position = c.position
+              if (c.size) fitAfter.size = c.size
+              updateNode.mutate({ id: c.id, patch: fitAfter })
+              if (fitBefore) {
+                recordNodeUpdate(qc, board.id, c.id, fitBefore, fitAfter, 'Fit group')
+              }
             }
           }
         }
+        if (batchOpen) history.commitBatch()
         return next
       })
     },
-    [updateNode, fitGroupsToChildren],
+    [updateNode, fitGroupsToChildren, snapshotPatch, qc, board.id],
   )
 
   const handleNodeDrag = useCallback(
@@ -610,8 +686,16 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
     (evt: React.MouseEvent, node: GitcanvasFlowNode, draggedNodes: GitcanvasFlowNode[]) => {
       setHighlightedGroupId(null)
 
+      // The drag-stop handler can issue many updateNode mutations in one
+      // gesture (the dragged node + every fit-cascade child). Wrap the
+      // whole thing in a single history batch so undo reverses the entire
+      // drag in one keystroke. The batch is committed at every return path.
+      const history = getBoardHistory(board.id)
+      const batchLabel = draggedNodes.length > 1 ? `Move ${draggedNodes.length} nodes` : 'Move node'
+      history.beginBatch(batchLabel)
+
       // Helper: dispatch every change from fitGroupsToChildren as IPC patches
-      // (position+size for groups, position for shifted children).
+      // and record an inverse for undo.
       const persistFitChanges = (
         list: Array<{
           id: string
@@ -620,26 +704,50 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         }>,
       ) => {
         for (const c of list) {
-          updateNode.mutate({
-            id: c.id,
-            patch: { position: c.position, size: c.size },
-          })
+          const fields: Array<'position' | 'size'> = []
+          if (c.position) fields.push('position')
+          if (c.size) fields.push('size')
+          const before = snapshotPatch(c.id, fields)
+          const after: UpdateNodePatch = {}
+          if (c.position) after.position = c.position
+          if (c.size) after.size = c.size
+          updateNode.mutate({ id: c.id, patch: after })
+          if (before) recordNodeUpdate(qc, board.id, c.id, before, after, 'Fit group')
         }
+      }
+
+      // Helper: persist a node's new position and record the inverse.
+      const persistMove = (n: GitcanvasFlowNode) => {
+        const before = snapshotPatch(n.id, ['position'])
+        const after: UpdateNodePatch = { position: n.position }
+        updateNode.mutate({ id: n.id, patch: after })
+        if (before) recordNodeUpdate(qc, board.id, n.id, before, after, 'Move node')
+      }
+
+      // Helper: persist a position+parent change and record both inversely.
+      const persistReparent = (
+        nodeId: string,
+        position: Position,
+        parentId: string | null,
+      ) => {
+        const before = snapshotPatch(nodeId, ['position', 'parentId'])
+        const after: UpdateNodePatch = { position, parentId }
+        updateNode.mutate({ id: nodeId, patch: after })
+        if (before) recordNodeUpdate(qc, board.id, nodeId, before, after, 'Re-parent node')
       }
 
       // Multi-drag: just persist new positions, no re-parenting. Re-parenting
       // multiple selected nodes at once would be confusing — the user is
       // moving a cluster, not reorganizing.
       if (draggedNodes.length > 1) {
-        for (const n of draggedNodes) {
-          updateNode.mutate({ id: n.id, patch: { position: n.position } })
-        }
+        for (const n of draggedNodes) persistMove(n)
         // Refit affected groups since dragged nodes may now overflow.
         const fit = fitGroupsToChildren(nodes)
         if (fit.changes.length > 0) {
           setNodes(fit.nodes)
           persistFitChanges(fit.changes)
         }
+        history.commitBatch()
         return
       }
 
@@ -658,12 +766,13 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         node.type === 'group' &&
         wouldCreateParentCycle(node.id, targetGroup.id, nodes)
       ) {
-        updateNode.mutate({ id: node.id, patch: { position: node.position } })
+        persistMove(node)
         const fit = fitGroupsToChildren(nodes)
         if (fit.changes.length > 0) {
           setNodes(fit.nodes)
           persistFitChanges(fit.changes)
         }
+        history.commitBatch()
         return
       }
 
@@ -678,9 +787,10 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
 
       if (targetGroup) {
         if (targetGroup.id === node.parentId) {
-          updateNode.mutate({ id: node.id, patch: { position: node.position } })
+          persistMove(node)
           // Same parent — node may have moved to a position that overflows.
           setNodes((curr) => refit(curr))
+          history.commitBatch()
           return
         }
         const nodeAbs = absoluteOf(node, nodes)
@@ -695,10 +805,8 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
           )
           return refit(next)
         })
-        updateNode.mutate({
-          id: node.id,
-          patch: { position: relative, parentId: targetGroup.id },
-        })
+        persistReparent(node.id, relative, targetGroup.id)
+        history.commitBatch()
         return
       }
 
@@ -710,25 +818,37 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
           )
           return refit(next)
         })
-        updateNode.mutate({
-          id: node.id,
-          patch: { position: absolute, parentId: null },
-        })
+        persistReparent(node.id, absolute, null)
+        history.commitBatch()
         return
       }
 
-      updateNode.mutate({ id: node.id, patch: { position: node.position } })
+      persistMove(node)
+      history.commitBatch()
     },
-    [nodes, updateNode, absoluteOf, findGroupAtPointer, fitGroupsToChildren],
+    [nodes, updateNode, absoluteOf, findGroupAtPointer, fitGroupsToChildren, snapshotPatch, qc, board.id],
   )
 
   const handleNodesDelete = useCallback(
     (deleted: GitcanvasFlowNode[]) => {
+      // Snapshot every doomed node from the React Query cache so undo can
+      // restore them verbatim. We do this BEFORE firing any mutate calls so
+      // a half-finished delete (e.g. one IPC succeeded, the next threw) can
+      // still be unwound completely.
+      const snapshots: BoardNode[] = []
       for (const n of deleted) {
-        removeNode.mutate({ id: n.id, boardId: board.id })
+        const cached = getCachedNode(qc, board.id, n.id)
+        if (cached) snapshots.push(cached)
       }
+      const history = getBoardHistory(board.id)
+      history.beginBatch(deleted.length > 1 ? `Delete ${deleted.length} nodes` : 'Delete node')
+      for (const snap of snapshots) {
+        removeNode.mutate({ id: snap.id, boardId: board.id })
+        recordNodeDelete(qc, snap)
+      }
+      history.commitBatch()
     },
-    [removeNode, board.id],
+    [removeNode, board.id, qc],
   )
 
   const handleNodeAdded = useCallback((node: GitcanvasFlowNode) => {
@@ -836,6 +956,11 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         const currentData = primary.data as GroupNodeData
         if ((currentData.layoutMode ?? 'free') === mode) return
         const nextData: GroupNodeData = { ...currentData, layoutMode: mode }
+        // Capture inverse + open a batch — the fit cascade can produce many
+        // dependent updates that should all undo as one.
+        const history = getBoardHistory(board.id)
+        history.beginBatch('Change group layout')
+        const groupBefore = snapshotPatch(primary.id, ['data'])
         // Update local state immediately so the directed layout pass picks
         // it up on the very next fit (handled in handleNodesChange below by
         // re-running fitGroupsToChildren on the updated node).
@@ -846,24 +971,53 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
           const fit = fitGroupsToChildren(next)
           if (fit.changes.length > 0) {
             for (const c of fit.changes) {
-              updateNode.mutate({ id: c.id, patch: { position: c.position, size: c.size } })
+              const fields: Array<'position' | 'size'> = []
+              if (c.position) fields.push('position')
+              if (c.size) fields.push('size')
+              const fitBefore = snapshotPatch(c.id, fields)
+              const fitAfter: UpdateNodePatch = {}
+              if (c.position) fitAfter.position = c.position
+              if (c.size) fitAfter.size = c.size
+              updateNode.mutate({ id: c.id, patch: fitAfter })
+              if (fitBefore) recordNodeUpdate(qc, board.id, c.id, fitBefore, fitAfter, 'Fit group')
             }
             return fit.nodes
           }
           return next
         })
         updateNode.mutate({ id: primary.id, patch: { data: nextData } })
+        if (groupBefore) {
+          recordNodeUpdate(
+            qc,
+            board.id,
+            primary.id,
+            groupBefore,
+            { data: nextData },
+            'Change group layout',
+          )
+        }
+        history.commitBatch()
         return
       }
       if (action === 'delete') {
         const idsToDelete = new Set(targetNodes.map((n) => n.id))
+        // Snapshot full per-node state for undo before any IPC fires.
+        const snapshots: BoardNode[] = []
         for (const id of idsToDelete) {
-          removeNode.mutate({ id, boardId: board.id })
+          const cached = getCachedNode(qc, board.id, id)
+          if (cached) snapshots.push(cached)
         }
+        const history = getBoardHistory(board.id)
+        history.beginBatch(snapshots.length > 1 ? `Delete ${snapshots.length} nodes` : 'Delete node')
+        for (const snap of snapshots) {
+          removeNode.mutate({ id: snap.id, boardId: board.id })
+          recordNodeDelete(qc, snap)
+        }
+        history.commitBatch()
         setNodes((curr) => curr.filter((n) => !idsToDelete.has(n.id)))
       }
     },
-    [removeNode, board.id, setRepoArchived, fitGroupsToChildren, updateNode],
+    [removeNode, board.id, setRepoArchived, fitGroupsToChildren, updateNode, snapshotPatch, qc],
   )
 
   // Apply visual selection ring on the currently-selected repo node, then
@@ -951,9 +1105,24 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
             onChange={(hex) => {
               const node = nodes.find((n) => n.id === colorPickerState.nodeId)
               if (!node || node.type !== 'group') return
-              const nextData = { label: node.data.label, color: hex }
+              // Spread the existing group data so `layoutMode` (and any
+              // other optional fields) survive a recolor — rebuilding the
+              // object from `{ label, color }` would silently reset
+              // vertical / horizontal groups back to free layout.
+              const nextData = { ...node.data, color: hex }
+              const before = snapshotPatch(node.id, ['data'])
               updateLocalNodeData(node.id, nextData)
               updateNode.mutate({ id: node.id, patch: { data: nextData } })
+              if (before) {
+                recordNodeUpdate(
+                  qc,
+                  board.id,
+                  node.id,
+                  before,
+                  { data: nextData },
+                  'Change group color',
+                )
+              }
             }}
             onClose={() => setColorPickerState(null)}
           />

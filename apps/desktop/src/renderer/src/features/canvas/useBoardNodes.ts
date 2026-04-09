@@ -92,3 +92,31 @@ export function useRemoveNode() {
     },
   })
 }
+
+/**
+ * Re-insert a node verbatim. Used by the undo/redo system to bring back a
+ * node that was just deleted (or to redo a previously-undone create) with
+ * full per-instance fidelity — id, createdAt, size, parentId, sourceListId,
+ * and the polymorphic `data` blob are all preserved by the main process.
+ */
+export function useRestoreNode() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { node: BoardNode }) => api.boards.restoreNode(input),
+    onSuccess: (node) => {
+      qc.setQueryData<BoardWithNodes>(boardKey(node.boardId), (prev) =>
+        patchBoardNodes(prev, (nodes) => {
+          // Defensive: if a stale copy somehow lingers (shouldn't happen —
+          // restore is preceded by a delete), replace it instead of duping.
+          const existing = nodes.findIndex((n) => n.id === node.id)
+          if (existing >= 0) {
+            const copy = nodes.slice()
+            copy[existing] = node
+            return copy
+          }
+          return [...nodes, node]
+        }),
+      )
+    },
+  })
+}

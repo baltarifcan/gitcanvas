@@ -78,6 +78,14 @@ export type IpcContract = {
     response: BoardNode
   }
   'boards.removeNode': { request: { id: ID }; response: void }
+  /**
+   * Re-insert a previously-removed node verbatim — same id, createdAt, size,
+   * parentId, data, etc. Used by the renderer's undo/redo system to restore
+   * deleted nodes (and to redo creates) with full fidelity.
+   *
+   * Throws if a row with the same id already exists.
+   */
+  'boards.restoreNode': { request: { node: BoardNode }; response: BoardNode }
 
   // ── Repositories ───────────────────────────────────────────────────────────
   'repos.list': { request: void; response: Repo[] }
@@ -195,6 +203,7 @@ export const IPC_CHANNELS = [
   'boards.addGroupNode',
   'boards.updateNode',
   'boards.removeNode',
+  'boards.restoreNode',
   'boards.linkList',
   'boards.unlinkList',
   'repos.list',

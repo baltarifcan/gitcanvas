@@ -12,6 +12,8 @@ type Props = {
 
 const MAX_EXPORT_DIMENSION = 2400
 const EXPORT_PADDING = 0.06
+/** Dark canvas fill matching the on-screen background. */
+const CANVAS_BG = '#0b0b0f'
 
 /** Wait for two animation frames so React commits + paints before capture. */
 function nextPaint(): Promise<void> {
@@ -141,8 +143,12 @@ export function BoardExportMenu({ board }: Props) {
       }
 
       if (fmt === 'png') {
+        // For PNG, html-to-image fills the rasterised canvas with
+        // `backgroundColor` BEFORE drawing the transformed clone on top, so
+        // the (transformed) bg on the clone root overlaps the canvas fill
+        // invisibly — the picture looks correct.
         const dataUrl = await toPng(viewport, {
-          backgroundColor: '#0b0b0f',
+          backgroundColor: CANVAS_BG,
           width: imageWidth,
           height: imageHeight,
           pixelRatio: 2,
@@ -153,15 +159,34 @@ export function BoardExportMenu({ board }: Props) {
         return { data: `base64:${base64}`, ext: 'png', mime: 'image/png' }
       }
 
+      // SVG path: do NOT pass `backgroundColor`. html-to-image's apply-style
+      // implementation sets `style.backgroundColor` on the cloned root, and
+      // the same root carries our export `transform` — so the bg gets
+      // translated and scaled along with the viewport, leaving a misaligned
+      // black rectangle in the output instead of filling the canvas. We
+      // also explicitly clear any inherited `background` shorthand on the
+      // clone for safety, then inject a full-bleed background rect into the
+      // resulting SVG markup so the canvas still has its dark fill.
+      const svgStyleOverride: Record<string, string> = {
+        ...styleOverride,
+        background: 'transparent',
+        backgroundColor: 'transparent',
+      }
       const svg = await toSvg(viewport, {
-        backgroundColor: '#0b0b0f',
         width: imageWidth,
         height: imageHeight,
         cacheBust: true,
-        style: styleOverride,
+        style: svgStyleOverride,
       })
       // toSvg returns `data:image/svg+xml;charset=utf-8,<urlencoded>`
-      const decoded = decodeURIComponent(svg.split(',', 2)[1] ?? '')
+      let decoded = decodeURIComponent(svg.split(',', 2)[1] ?? '')
+      // Splice the background rect in as the first child of <svg>. The
+      // non-greedy `[^>]*?` keeps the match scoped to the opening tag and
+      // avoids gobbling content if the tag spans multiple attributes.
+      decoded = decoded.replace(
+        /(<svg\b[^>]*?>)/,
+        `$1<rect width="100%" height="100%" fill="${CANVAS_BG}"/>`,
+      )
       return { data: decoded, ext: 'svg', mime: 'image/svg+xml' }
     } finally {
       setExportMode(false)

@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
+import { useQueryClient } from '@tanstack/react-query'
 import { Check, GitBranch, X } from 'lucide-react'
 import clsx from 'clsx'
 import type { RepoNodeData } from '@gitcanvas/shared'
 import { useRepoBranches } from '@renderer/features/repos/useRepos'
 import { useUpdateNode } from '@renderer/features/canvas/useBoardNodes'
+import { getCachedNode, recordNodeUpdate } from '@renderer/features/canvas/historyActions'
 import { useCanvasContext } from '@renderer/features/canvas/CanvasContext'
 import { ColorPicker } from '@renderer/components/ColorPicker'
 import type { RepoFlowNodeData } from '@renderer/features/canvas/nodeMapping'
@@ -36,7 +38,8 @@ const DEFAULT_BRANCH_COLOR = '#71717a' // zinc-500
 export function RepoNodeConfigDialog({ open, onOpenChange, nodeId, initialData }: Props) {
   const branches = useRepoBranches(initialData.repoId)
   const updateNode = useUpdateNode()
-  const { updateLocalNodeData } = useCanvasContext()
+  const qc = useQueryClient()
+  const { boardId, updateLocalNodeData } = useCanvasContext()
 
   const [visibleBranches, setVisibleBranches] = useState<Set<string>>(
     new Set(initialData.visibleBranches ?? []),
@@ -111,8 +114,19 @@ export function RepoNodeConfigDialog({ open, onOpenChange, nodeId, initialData }
       // an empty-string for every node — keeps the data tidy.
       notes: trimmedNotes ? trimmedNotes : undefined,
     }
+    const before = getCachedNode(qc, boardId, nodeId)?.data
     updateLocalNodeData(nodeId, { ...newData, repoId: initialData.repoId } as RepoFlowNodeData)
     updateNode.mutate({ id: nodeId, patch: { data: newData } })
+    if (before !== undefined) {
+      recordNodeUpdate(
+        qc,
+        boardId,
+        nodeId,
+        { data: before },
+        { data: newData },
+        'Configure repo node',
+      )
+    }
     onOpenChange(false)
   }
 

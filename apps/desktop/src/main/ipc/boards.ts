@@ -1,4 +1,5 @@
-import { z } from 'zod'
+import { z, type ZodType } from 'zod'
+import type { IpcRequest } from '@gitcanvas/shared'
 import { registerHandler } from '@main/ipc/util'
 import * as boardsQ from '@main/db/queries/boards'
 import * as nodesQ from '@main/db/queries/boardNodes'
@@ -63,6 +64,32 @@ const updateNodeInput = z.object({
   }),
 })
 
+// Validation for boards.restoreNode. We accept the full BoardNode shape — the
+// renderer is sending back something it just received from the same handler,
+// so the discriminator + per-kind data are already valid. We validate enough
+// fields to guard against malformed input but trust the union shape itself.
+//
+// The schema is cast to `ZodType<IpcRequest<'boards.restoreNode'>>` because
+// the parsed flat shape doesn't structurally match BoardNode's discriminated
+// union (zod doesn't propagate the kind narrowing to repoId / data here).
+// Runtime validation is unchanged — only the static type is widened.
+const restoreNodeInput = z.object({
+  node: z.object({
+    id: ulidSchema,
+    boardId: ulidSchema,
+    kind: z.enum(['repo', 'note', 'group']),
+    repoId: ulidSchema.nullable(),
+    sourceListId: ulidSchema.nullable().optional(),
+    parentId: ulidSchema.nullable(),
+    position: positionSchema,
+    size: sizeSchema,
+    zIndex: z.number().int(),
+    data: z.union([noteDataSchema, groupDataSchema, repoNodeDataSchema]),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+}) as unknown as ZodType<IpcRequest<'boards.restoreNode'>>
+
 export function registerBoardHandlers(): void {
   registerHandler('boards.list', z.void(), () => {
     return boardsQ.listBoards()
@@ -123,6 +150,10 @@ export function registerBoardHandlers(): void {
   registerHandler('boards.removeNode', z.object({ id: ulidSchema }), ({ id }) => {
     nodesQ.deleteBoardNode(id)
   })
+
+  registerHandler('boards.restoreNode', restoreNodeInput, ({ node }) =>
+    nodesQ.restoreBoardNode(node),
+  )
 
   // ── List linking ───────────────────────────────────────────────────────────
 

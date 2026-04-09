@@ -17,6 +17,9 @@ import type { GitcanvasFlowNode } from './nodeMapping'
  * The Canvas owns these states and exposes them via this context.
  */
 export type CanvasContextValue = {
+  /** Id of the board this canvas is rendering. Custom node components need
+   * this to record undo/redo entries scoped to the right history stack. */
+  boardId: string
   /** Patch a node's `data` field locally — does not persist. */
   updateLocalNodeData: (id: string, data: GitcanvasFlowNode['data']) => void
   /** id of the group currently being dragged-over, or null. */

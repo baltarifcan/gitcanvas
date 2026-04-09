@@ -1,14 +1,22 @@
 import { memo, useEffect, useState } from 'react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
+import { useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { useUpdateNode } from '@renderer/features/canvas/useBoardNodes'
+import { getCachedNode, recordNodeUpdate } from '@renderer/features/canvas/historyActions'
 import { useCanvasContext } from '@renderer/features/canvas/CanvasContext'
 import type { GroupFlowNode } from '@renderer/features/canvas/nodeMapping'
 
 function GroupNodeImpl({ id, data, selected }: NodeProps<GroupFlowNode>) {
   const updateNode = useUpdateNode()
-  const { updateLocalNodeData, highlightedGroupId, renamingGroupId, clearRenamingGroupId } =
-    useCanvasContext()
+  const qc = useQueryClient()
+  const {
+    boardId,
+    updateLocalNodeData,
+    highlightedGroupId,
+    renamingGroupId,
+    clearRenamingGroupId,
+  } = useCanvasContext()
   const [editing, setEditing] = useState(false)
   const [label, setLabel] = useState(data.label)
 
@@ -32,11 +40,19 @@ function GroupNodeImpl({ id, data, selected }: NodeProps<GroupFlowNode>) {
       setLabel(data.label)
       return
     }
-    const newData = { label: trimmed, color: data.color }
+    // Spread `data` so optional fields (notably `layoutMode`) survive a
+    // rename — building `{ label, color }` from scratch silently reset
+    // vertical / horizontal groups back to free layout the next time the
+    // user edited the title.
+    const newData = { ...data, label: trimmed }
+    const before = getCachedNode(qc, boardId, id)?.data
     // Update local React Flow state immediately so the rename is visible
     // without waiting for any cache roundtrip.
     updateLocalNodeData(id, newData)
     updateNode.mutate({ id, patch: { data: newData } })
+    if (before !== undefined) {
+      recordNodeUpdate(qc, boardId, id, { data: before }, { data: newData }, 'Rename group')
+    }
   }
 
   const isDropTarget = highlightedGroupId === id

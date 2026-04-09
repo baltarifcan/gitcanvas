@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
+import { useQueryClient } from '@tanstack/react-query'
 import { GitBranch, Group as GroupIcon, StickyNote } from 'lucide-react'
 import type { BoardNode } from '@gitcanvas/shared'
 import { useAddGroupNode, useAddNoteNode } from './useBoardNodes'
+import { recordNodeCreate } from './historyActions'
 import { boardNodeToFlowNode, type GitcanvasFlowNode } from './nodeMapping'
 import { ColorPicker } from '@renderer/components/ColorPicker'
 import { RepoLibraryDialog } from '@renderer/features/repos/RepoLibraryDialog'
@@ -18,6 +20,7 @@ export function CanvasToolbar({ boardId, onNodeAdded }: Props) {
   const addNote = useAddNoteNode()
   const addGroup = useAddGroupNode()
   const rf = useReactFlow()
+  const qc = useQueryClient()
   const [repoLibraryOpen, setRepoLibraryOpen] = useState(false)
   // Persist the last-used group color across "Add group" clicks so users
   // don't have to re-pick every time they're filling out a board.
@@ -46,6 +49,7 @@ export function CanvasToolbar({ boardId, onNodeAdded }: Props) {
       data: { content: '' },
     })
     pushBoardNode(node)
+    recordNodeCreate(qc, node)
   }
 
   const handleAddGroup = async () => {
@@ -56,6 +60,7 @@ export function CanvasToolbar({ boardId, onNodeAdded }: Props) {
       data: { label: 'Group', color: groupColor },
     })
     pushBoardNode(node)
+    recordNodeCreate(qc, node)
   }
 
   return (

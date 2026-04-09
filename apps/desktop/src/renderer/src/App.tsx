@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { BoardSidebar } from './features/boards/BoardSidebar'
 import { BoardView } from './features/boards/BoardView'
 import { SettingsDialog } from './features/chains/SettingsDialog'
+import { getBoardHistory } from './features/canvas/boardHistory'
 
 export default function App() {
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null)
@@ -26,6 +27,32 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  // ⌘Z / Ctrl+Z and ⌘⇧Z / Ctrl+Shift+Z drive per-board undo / redo. Scoped
+  // to whichever board is currently selected, so each board has its own
+  // independent timeline. Re-bound when the user switches boards.
+  //
+  // We deliberately yield to native text undo when the focused element is
+  // editable (textarea / input / contentEditable). Otherwise typing into a
+  // note and hitting ⌘Z would surprise the user by undoing a board action
+  // instead of the last keystroke they typed.
+  useEffect(() => {
+    if (!selectedBoardId) return
+    const history = getBoardHistory(selectedBoardId)
+    const onKey = (e: KeyboardEvent) => {
+      const isUndo = (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z'
+      if (!isUndo) return
+      if (isEditableTarget(e.target)) return
+      e.preventDefault()
+      if (e.shiftKey) {
+        void history.redo()
+      } else {
+        void history.undo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectedBoardId])
 
   return (
     <div className="flex h-screen w-screen flex-col bg-zinc-950 text-zinc-100">
@@ -81,6 +108,26 @@ export default function App() {
       </div>
     </div>
   )
+}
+
+/**
+ * True when the keyboard event target is an editable text surface — a
+ * textarea, an `<input type="text">`, or any element with `contentEditable`.
+ * Used to gate the global undo/redo handler so we don't steal native text
+ * undo from inline editors (note bodies, group rename, repo notes, etc.).
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  if (tag === 'TEXTAREA') return true
+  if (tag === 'INPUT') {
+    // Skip non-text inputs (checkbox, radio, button, etc.) — they don't have
+    // their own undo, so the global shortcut should still work over them.
+    const type = (target as HTMLInputElement).type
+    return type === 'text' || type === 'search' || type === 'url' || type === 'email' || type === 'password'
+  }
+  return false
 }
 
 /** Hook: invalidates per-repo git status caches when the window regains focus. */
