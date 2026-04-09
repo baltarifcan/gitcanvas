@@ -4,6 +4,13 @@ Desktop app to visually organize your **local git repositories** on freeform can
 
 Built with Electron + React + React Flow + SQLite. pnpm monorepo. macOS-first.
 
+> [!CAUTION]
+> GitCanvas is a hobby project built for my own workflow. It's not actively
+> supported, may contain bugs or break in unexpected ways, and there is no
+> guarantee of stability, data safety, or future maintenance. If you decide
+> to try it, you do so entirely at your own discretion — back up anything
+> important first.
+
 ## Features
 
 - **Boards** — multiple canvases, each containing repos, sticky notes, and colored group containers
