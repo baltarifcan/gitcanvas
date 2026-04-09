@@ -35,6 +35,16 @@ export const repos = sqliteTable(
     /** Absolute filesystem path. Local-only — every repo has one. */
     localPath: text('local_path').notNull(),
     topics: text('topics', { mode: 'json' }).$type<string[]>().notNull().default([]),
+    /**
+     * Archived state — reflects whether the user has retired this repo. The
+     * flag is global (not per-board-instance) so it propagates to every node
+     * referencing the repo. Stored as 0/1; converted to a JS boolean at the
+     * IPC boundary in `queries/repos.ts` (rowToRepo + setRepoArchived). We
+     * keep this as a plain integer rather than `mode: 'boolean'` so the
+     * write/read paths are explicit and unambiguous — easier to debug and
+     * matches the rest of the schema's "TEXT/INT only" convention.
+     */
+    archived: integer('archived').notNull().default(0),
     createdAt: text('created_at').notNull().default(nowIso),
   },
   (t) => ({

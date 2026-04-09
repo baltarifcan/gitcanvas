@@ -46,6 +46,7 @@ export function RepoNodeConfigDialog({ open, onOpenChange, nodeId, initialData }
   )
   const [showBranchDetails, setShowBranchDetails] = useState(initialData.showBranchDetails ?? true)
   const [showAnnotations, setShowAnnotations] = useState(initialData.showAnnotations ?? true)
+  const [notes, setNotes] = useState(initialData.notes ?? '')
 
   useEffect(() => {
     if (!open) return
@@ -53,6 +54,7 @@ export function RepoNodeConfigDialog({ open, onOpenChange, nodeId, initialData }
     setBranchColors(initialData.branchColors ?? {})
     setShowBranchDetails(initialData.showBranchDetails ?? true)
     setShowAnnotations(initialData.showAnnotations ?? true)
+    setNotes(initialData.notes ?? '')
   }, [open, initialData])
 
   /**
@@ -99,11 +101,15 @@ export function RepoNodeConfigDialog({ open, onOpenChange, nodeId, initialData }
       if (branchColors[name]) cleanedColors[name] = branchColors[name]!
     }
 
+    const trimmedNotes = notes.trim()
     const newData: RepoNodeData = {
       visibleBranches: Array.from(visibleBranches),
       branchColors: Object.keys(cleanedColors).length > 0 ? cleanedColors : undefined,
       showBranchDetails,
       showAnnotations,
+      // Drop the field entirely when empty so the JSON column doesn't carry
+      // an empty-string for every node — keeps the data tidy.
+      notes: trimmedNotes ? trimmedNotes : undefined,
     }
     updateLocalNodeData(nodeId, { ...newData, repoId: initialData.repoId } as RepoFlowNodeData)
     updateNode.mutate({ id: nodeId, patch: { data: newData } })
@@ -201,6 +207,25 @@ export function RepoNodeConfigDialog({ open, onOpenChange, nodeId, initialData }
                   })}
                 </ul>
               )}
+            </section>
+
+            {/* ── Notes ───────────────────────────────────────────────── */}
+            <section className="border-t border-zinc-800 px-6 py-4">
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                Notes
+              </h3>
+              <p className="mt-1 text-[11px] text-zinc-500">
+                Free-form notes shown on this node directly under the title.
+                Per-instance — different boards can carry different notes.
+              </p>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={3}
+                maxLength={2000}
+                placeholder="e.g. handles webhook ingest — talk to @rob before changes"
+                className="mt-2 w-full resize-y rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-violet-500 focus:outline-none"
+              />
             </section>
 
             {/* ── Display toggles ─────────────────────────────────────── */}

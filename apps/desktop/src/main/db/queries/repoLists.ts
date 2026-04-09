@@ -99,6 +99,7 @@ export function getRepoList(id: string): RepoListWithRepos {
     defaultBranch: repo.defaultBranch,
     localPath: repo.localPath,
     topics: repo.topics,
+    archived: repo.archived === 1,
     createdAt: repo.createdAt,
   }))
 

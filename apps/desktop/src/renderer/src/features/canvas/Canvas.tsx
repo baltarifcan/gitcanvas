@@ -11,7 +11,14 @@ import {
   useReactFlow,
   type NodeChange,
 } from '@xyflow/react'
-import type { BoardWithNodes, Position } from '@gitcanvas/shared'
+import type {
+  BoardWithNodes,
+  GroupLayoutMode,
+  GroupNodeData,
+  Position,
+  Repo,
+} from '@gitcanvas/shared'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@renderer/lib/api'
 import { boardNodeToFlowNode, type GitcanvasFlowNode, type RepoFlowNodeData } from './nodeMapping'
 import { nodeTypes } from './nodeTypes'
@@ -21,6 +28,7 @@ import { CanvasProvider, type CanvasContextValue } from './CanvasContext'
 import { NodeContextMenu, type NodeContextMenuState, type NodeContextAction } from './NodeContextMenu'
 import { RepoNodeConfigDialog } from './RepoNodeConfigDialog'
 import { ColorPickerPopover } from './ColorPickerPopover'
+import { repoKey, useSetRepoArchived } from '@renderer/features/repos/useRepos'
 
 /**
  * React Flow requires that parent nodes appear before their children in the
@@ -30,13 +38,14 @@ import { ColorPickerPopover } from './ColorPickerPopover'
  *    of their child nodes in the nodes array."
  *
  * Our query layer orders by `createdAt`, which is great for stable rendering
- * but breaks this rule when a group is created AFTER the repos that later
- * get dragged into it (the group ends up after its children in the array).
+ * but breaks this rule when a group is created AFTER the repos (or nested
+ * groups) that later get dragged into it.
  *
- * Groups never nest into other groups in this app, so a single roots-first
- * partition is enough — no full topological sort. We early-return the input
- * untouched when the order is already valid to preserve referential identity
- * (and let React Flow's reconciliation skip work).
+ * Groups can now nest into other groups, so a simple roots-vs-children
+ * partition is no longer enough — we need a stable topological sort by
+ * parent depth. Same early-return optimization applies: when the input is
+ * already valid we hand it back untouched, preserving referential identity
+ * so React Flow's reconciliation can skip work.
  */
 function ensureParentsFirst(nodes: GitcanvasFlowNode[]): GitcanvasFlowNode[] {
   const indexById = new Map<string, number>()
@@ -54,15 +63,60 @@ function ensureParentsFirst(nodes: GitcanvasFlowNode[]): GitcanvasFlowNode[] {
   }
   if (!needsResort) return nodes
 
-  // Stable partition: roots first, then children. Preserves relative order
-  // within each bucket so the user's original layout intent stays intact.
-  const roots: GitcanvasFlowNode[] = []
-  const children: GitcanvasFlowNode[] = []
-  for (const n of nodes) {
-    if (n.parentId) children.push(n)
-    else roots.push(n)
+  // Stable bucketing by depth. Depth 0 = no parent (or parent not in pool);
+  // depth(n) = depth(parent) + 1. We resolve depths in passes — at most O(N²)
+  // worst case but N is small (canvas nodes), and it preserves the original
+  // relative order within each depth bucket.
+  const depthById = new Map<string, number>()
+  const idsInPool = new Set(nodes.map((n) => n.id))
+  let progressed = true
+  while (progressed) {
+    progressed = false
+    for (const n of nodes) {
+      if (depthById.has(n.id)) continue
+      if (!n.parentId || !idsInPool.has(n.parentId)) {
+        depthById.set(n.id, 0)
+        progressed = true
+        continue
+      }
+      const parentDepth = depthById.get(n.parentId)
+      if (parentDepth !== undefined) {
+        depthById.set(n.id, parentDepth + 1)
+        progressed = true
+      }
+    }
   }
-  return [...roots, ...children]
+  // Any node still missing a depth is part of a cycle — defensively bucket
+  // them at the end so React Flow doesn't crash; the drop validator below
+  // already prevents cycles being introduced via the UI.
+  for (const n of nodes) if (!depthById.has(n.id)) depthById.set(n.id, Number.MAX_SAFE_INTEGER)
+
+  // Stable sort by depth ascending. Array.sort in V8 is stable since ES2019.
+  return [...nodes].sort((a, b) => depthById.get(a.id)! - depthById.get(b.id)!)
+}
+
+/**
+ * True when assigning `node` to `targetParent` would form a cycle — i.e.
+ * `targetParent` is already a descendant of `node`. Walks up the parent
+ * chain from `targetParent` and checks for `node.id`.
+ */
+function wouldCreateParentCycle(
+  nodeId: string,
+  targetParentId: string,
+  pool: GitcanvasFlowNode[],
+): boolean {
+  if (nodeId === targetParentId) return true
+  const byId = new Map(pool.map((n) => [n.id, n]))
+  let cursor = byId.get(targetParentId)
+  // Cap the walk at pool.length to defend against pre-existing cycles (we
+  // shouldn't have any, but a corrupted DB shouldn't crash the canvas).
+  let hops = 0
+  while (cursor?.parentId && hops <= pool.length) {
+    if (cursor.parentId === nodeId) return true
+    cursor = byId.get(cursor.parentId)
+    hops++
+  }
+  return false
 }
 
 type Props = {
@@ -106,6 +160,8 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
 
   const updateNode = useUpdateNode()
   const removeNode = useRemoveNode()
+  const setRepoArchived = useSetRepoArchived()
+  const qc = useQueryClient()
   const rf = useReactFlow<GitcanvasFlowNode>()
 
   // Used by NoteNode/GroupNode to update their own `data` after inline edits
@@ -162,17 +218,41 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
    *
    * "Smallest containing group" matters when groups overlap or nest: the
    * innermost one wins.
+   *
+   * `excludeNodeId` (and its entire subtree) is filtered out so that a group
+   * being dragged into another group never picks itself — or one of its own
+   * descendants — as the drop target. Without this, dragging a group into
+   * one of its own children would corrupt the parent chain.
    */
   const findGroupAtPointer = useCallback(
     (
       evt: { clientX: number; clientY: number },
       pool: GitcanvasFlowNode[],
+      excludeNodeId?: string | null,
     ): GitcanvasFlowNode | null => {
       const flowPos = rf.screenToFlowPosition({ x: evt.clientX, y: evt.clientY })
+      // Build the set of ids to exclude: the dragged node and everything
+      // beneath it in the parent tree.
+      const excluded = new Set<string>()
+      if (excludeNodeId) {
+        excluded.add(excludeNodeId)
+        let added = true
+        while (added) {
+          added = false
+          for (const n of pool) {
+            if (n.parentId && excluded.has(n.parentId) && !excluded.has(n.id)) {
+              excluded.add(n.id)
+              added = true
+            }
+          }
+        }
+      }
+
       let smallest: GitcanvasFlowNode | null = null
       let smallestArea = Infinity
       for (const n of pool) {
         if (n.type !== 'group') continue
+        if (excluded.has(n.id)) continue
         const abs = absoluteOf(n, pool)
         const w = n.measured?.width ?? n.width ?? 380
         const h = n.measured?.height ?? n.height ?? 240
@@ -195,23 +275,30 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
   )
 
   /**
-   * Walks every group and expands its bounds in any direction needed to
-   * contain all of its direct children with inner padding.
+   * Walks every group and either:
    *
-   * Right/bottom expansion is straightforward: bump width/height.
+   *   • For `free` groups (the historical default): expands the group's bounds
+   *     in any direction needed to contain all direct children with inner
+   *     padding. Children keep their user-chosen positions; the group grows
+   *     around them.
    *
-   * Left/top expansion is trickier because group children are positioned
-   * RELATIVE to the parent. To extend a group to the left we have to:
+   *   • For `vertical` / `horizontal` groups: re-stacks the children along the
+   *     primary axis in their current visual order, then sizes the group to
+   *     hug the stack. Children's relative positions on the cross axis are
+   *     normalised to PADDING so the row/column lines up cleanly.
+   *
+   * Free-mode left/top expansion is tricky because children are positioned
+   * RELATIVE to the parent. Extending leftward requires:
    *   1. Shift the group's own position left/up by the deficit.
    *   2. Bump the group's width/height by the same deficit.
    *   3. Offset every child's relative position by +deficit so they stay
    *      visually still while their parent's coordinate system slides.
    *
    * The function returns the patched node array plus a list of changes to
-   * persist via `boards.updateNode` — both the group's new size+position and
-   * each shifted child's new position.
+   * persist via `boards.updateNode` — every modified group/child.
    *
-   * Only EXPANDS — never shrinks. The user said "no overflow", not "tight fit".
+   * Free mode only EXPANDS, never shrinks. Directed modes do shrink-to-fit
+   * because the layout is fully determined by the children list.
    */
   const fitGroupsToChildren = useCallback(
     (
@@ -226,16 +313,12 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
     } => {
       const PADDING = 16
       const HEADER_RESERVED = 32 // group header is 28px tall + a little breathing room
-
-      // Index direct children by parent id.
-      const childrenByParent = new Map<string, GitcanvasFlowNode[]>()
-      for (const n of pool) {
-        if (n.parentId) {
-          const arr = childrenByParent.get(n.parentId) ?? []
-          arr.push(n)
-          childrenByParent.set(n.parentId, arr)
-        }
-      }
+      const CHILD_GAP = 12
+      // Extra gap below the header for directed layouts so the first child
+      // sits inset by PADDING on every side — symmetric with left / right /
+      // bottom. Without this the top would only have HEADER_RESERVED (~4px
+      // of breathing room) while the other sides had a full PADDING.
+      const DIRECTED_TOP_INSET = HEADER_RESERVED + PADDING
 
       let nextNodes = pool
       const changes: Array<{
@@ -244,11 +327,133 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         size?: { width: number; height: number }
       }> = []
 
-      for (const group of pool) {
-        if (group.type !== 'group') continue
-        const children = childrenByParent.get(group.id) ?? []
+      // Helper to push or merge a change for a node id (last write wins on
+      // each field). Keeps `changes` from blowing up when groups nest and a
+      // child gets touched by both its direct parent and an ancestor pass.
+      const recordChange = (
+        id: string,
+        patch: { position?: { x: number; y: number }; size?: { width: number; height: number } },
+      ) => {
+        const existing = changes.find((c) => c.id === id)
+        if (existing) {
+          if (patch.position) existing.position = patch.position
+          if (patch.size) existing.size = patch.size
+        } else {
+          changes.push({ id, ...patch })
+        }
+      }
+
+      // ── Build a post-order group walk ────────────────────────────────────
+      //
+      // Nested groups MUST be reflowed bottom-up. If we processed an outer
+      // group first, its child sizes (which include other groups) would
+      // still be stale, so the outer would size itself based on what the
+      // inner group USED to look like. Then the inner group reflows, the
+      // outer never gets re-checked, and you end up with either an outer
+      // that's too small (when the inner grew) or one that "shrinks like
+      // the inner shrank" (the original bug report).
+      //
+      // We compute each group's depth by walking the parent chain, then
+      // sort groups by depth descending (deepest first). At each step we
+      // re-read the group + its children from the running `nextNodes`
+      // array so size updates from earlier passes are visible.
+      const depthOf = (n: GitcanvasFlowNode): number => {
+        let depth = 0
+        let cursor: GitcanvasFlowNode | undefined = n
+        const seen = new Set<string>()
+        while (cursor?.parentId && !seen.has(cursor.id)) {
+          seen.add(cursor.id)
+          const parent = pool.find((p) => p.id === cursor!.parentId)
+          if (!parent) break
+          depth++
+          cursor = parent
+        }
+        return depth
+      }
+
+      const groupOrder = pool
+        .filter((n) => n.type === 'group')
+        .map((n) => ({ id: n.id, depth: depthOf(n) }))
+        .sort((a, b) => b.depth - a.depth)
+
+      for (const { id: groupId } of groupOrder) {
+        // Re-fetch from the running array — earlier passes may have updated
+        // this group's children's sizes. Iterating over the original `pool`
+        // would silently use stale dimensions.
+        const group = nextNodes.find((n) => n.id === groupId)
+        if (!group || group.type !== 'group') continue
+        const children = nextNodes.filter((n) => n.parentId === groupId)
         if (children.length === 0) continue
 
+        const layoutMode = (group.data as GroupNodeData).layoutMode ?? 'free'
+        const currentWidth =
+          group.measured?.width ?? (group.width as number | undefined) ?? 380
+        const currentHeight =
+          group.measured?.height ?? (group.height as number | undefined) ?? 240
+
+        // ── Directed (vertical / horizontal) layout ──────────────────────
+        if (layoutMode === 'vertical' || layoutMode === 'horizontal') {
+          // Stable order: sort children by their primary-axis position so
+          // dragging a child past a sibling reorders the stack predictably.
+          const ordered = [...children].sort((a, b) =>
+            layoutMode === 'vertical' ? a.position.y - b.position.y : a.position.x - b.position.x,
+          )
+
+          // Walk children and assign their new relative positions. Cross-axis
+          // is pinned to PADDING; primary axis starts past the header + the
+          // top inset so the first child has the same gap as the other sides.
+          let cursor = layoutMode === 'vertical' ? DIRECTED_TOP_INSET : PADDING
+          let crossExtent = 0
+          for (const c of ordered) {
+            const cw = c.measured?.width ?? (c.width as number | undefined) ?? 240
+            const ch = c.measured?.height ?? (c.height as number | undefined) ?? 140
+            const newPos =
+              layoutMode === 'vertical'
+                ? { x: PADDING, y: cursor }
+                : { x: cursor, y: DIRECTED_TOP_INSET }
+            cursor += (layoutMode === 'vertical' ? ch : cw) + CHILD_GAP
+            crossExtent = Math.max(crossExtent, layoutMode === 'vertical' ? cw : ch)
+
+            if (c.position.x !== newPos.x || c.position.y !== newPos.y) {
+              nextNodes = nextNodes.map((n) =>
+                n.id === c.id ? ({ ...n, position: newPos } as GitcanvasFlowNode) : n,
+              )
+              recordChange(c.id, { position: newPos })
+            }
+          }
+
+          // Final stack length minus the trailing CHILD_GAP we just added.
+          // For vertical mode `cursor` already accounts for the top inset
+          // (it started at DIRECTED_TOP_INSET); for horizontal we add it to
+          // the cross-axis (height) below.
+          const stackLen = cursor - CHILD_GAP + PADDING
+          const newWidth =
+            layoutMode === 'vertical' ? Math.max(crossExtent + PADDING * 2, 200) : stackLen
+          const newHeight =
+            layoutMode === 'horizontal'
+              ? Math.max(crossExtent + DIRECTED_TOP_INSET + PADDING, 140)
+              : stackLen
+
+          if (newWidth !== currentWidth || newHeight !== currentHeight) {
+            nextNodes = nextNodes.map((n) =>
+              n.id === group.id
+                ? ({
+                    ...n,
+                    width: newWidth,
+                    height: newHeight,
+                    // Stamp `measured` too, so the parent group's pass on
+                    // the next iteration reads the just-computed size
+                    // instead of React Flow's stale measurement.
+                    measured: { width: newWidth, height: newHeight },
+                  } as GitcanvasFlowNode)
+                : n,
+            )
+            recordChange(group.id, { size: { width: newWidth, height: newHeight } })
+          }
+          continue
+        }
+
+        // ── Free layout (default) ────────────────────────────────────────
         // Bounding box of children in current parent-relative coordinates.
         let minX = Infinity
         let minY = Infinity
@@ -267,11 +472,6 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         // child sits inside the padding/header zone. Always >= 0.
         const shiftLeft = Math.max(0, PADDING - minX)
         const shiftUp = Math.max(0, HEADER_RESERVED - minY)
-
-        const currentWidth =
-          group.measured?.width ?? (group.width as number | undefined) ?? 380
-        const currentHeight =
-          group.measured?.height ?? (group.height as number | undefined) ?? 240
 
         // After shifting, every child's effective position increases by
         // (shiftLeft, shiftUp). Compute the new max edges using the shifted
@@ -298,9 +498,17 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
 
         // Apply the changes locally: group resize + position, plus children
         // offset by (+shiftLeft, +shiftUp) to keep them visually anchored.
+        // We also stamp `measured` on the group so an enclosing group's
+        // bottom-up pass reads the post-fit size, not React Flow's stale one.
         nextNodes = nextNodes.map((n) => {
           if (n.id === group.id) {
-            return { ...n, position: newGroupPos, width: newWidth, height: newHeight }
+            return {
+              ...n,
+              position: newGroupPos,
+              width: newWidth,
+              height: newHeight,
+              measured: { width: newWidth, height: newHeight },
+            } as GitcanvasFlowNode
           }
           if (positionChanged && n.parentId === group.id) {
             return {
@@ -311,16 +519,14 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
           return n
         })
 
-        changes.push({
-          id: group.id,
+        recordChange(group.id, {
           position: positionChanged ? newGroupPos : undefined,
           size: { width: newWidth, height: newHeight },
         })
 
         if (positionChanged) {
           for (const c of children) {
-            changes.push({
-              id: c.id,
+            recordChange(c.id, {
               position: { x: c.position.x + shiftLeft, y: c.position.y + shiftUp },
             })
           }
@@ -387,12 +593,14 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
 
   const handleNodeDrag = useCallback(
     (evt: React.MouseEvent, node: GitcanvasFlowNode) => {
-      if (node.type === 'group') {
-        setHighlightedGroupId(null)
-        return
-      }
       // Live highlight of the group the cursor is currently hovering over.
-      const target = findGroupAtPointer(evt, nodes)
+      // For group drags we exclude the node and its descendants so the user
+      // never sees a "drop into self / own child" highlight.
+      const target = findGroupAtPointer(
+        evt,
+        nodes,
+        node.type === 'group' ? node.id : null,
+      )
       setHighlightedGroupId(target ? target.id : null)
     },
     [findGroupAtPointer, nodes],
@@ -435,8 +643,21 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         return
       }
 
-      // Groups themselves stay flat — they don't nest into other groups.
-      if (node.type === 'group') {
+      // Groups can now nest into other groups. The drag-stop pass routes
+      // through the same target-group + reparent flow as repo / note nodes.
+      // Special-case: when dragging a group we exclude the dragged node and
+      // its descendants from drop targets so the user can never form a cycle.
+      const excludeForTarget = node.type === 'group' ? node.id : null
+      const targetGroup = findGroupAtPointer(evt, nodes, excludeForTarget)
+
+      // Defensive cycle check — covers the (rare) case where the pointer
+      // lookup somehow returns a descendant due to in-flight state. Bail out
+      // and treat the drop as "no re-parenting".
+      if (
+        targetGroup &&
+        node.type === 'group' &&
+        wouldCreateParentCycle(node.id, targetGroup.id, nodes)
+      ) {
         updateNode.mutate({ id: node.id, patch: { position: node.position } })
         const fit = fitGroupsToChildren(nodes)
         if (fit.changes.length > 0) {
@@ -445,8 +666,6 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         }
         return
       }
-
-      const targetGroup = findGroupAtPointer(evt, nodes)
 
       // Helper to refit groups after we mutate nextNodes locally.
       const refit = (current: GitcanvasFlowNode[]) => {
@@ -545,14 +764,27 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
           ? nodes.filter((n) => selectedIds.has(n.id))
           : [node]
 
+      // Snapshot kind-specific state so the menu can render checkmarks /
+      // archive vs unarchive labels without poking back into React Query.
+      const context: NodeContextMenuState['context'] = {}
+      if (node.type === 'repo') {
+        const repoId = (node.data as RepoFlowNodeData).repoId
+        const cached = qc.getQueryData<Repo>(repoKey(repoId))
+        context.repoArchived = cached?.archived ?? false
+      }
+      if (node.type === 'group') {
+        context.groupLayoutMode = (node.data as GroupNodeData).layoutMode ?? 'free'
+      }
+
       setContextMenu({
         x: evt.clientX,
         y: evt.clientY,
         nodes: targets,
         primary: node,
+        context,
       })
     },
-    [nodes],
+    [nodes, qc],
   )
 
   const handleContextAction = useCallback(
@@ -570,6 +802,12 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         })
         return
       }
+      if (action === 'toggle-archived' && primary.type === 'repo') {
+        const repoId = (primary.data as RepoFlowNodeData).repoId
+        const currentlyArchived = state.context?.repoArchived ?? false
+        setRepoArchived.mutate({ id: repoId, archived: !currentlyArchived })
+        return
+      }
       if (action === 'rename-group' && primary.type === 'group') {
         setRenamingGroupId(primary.id)
         return
@@ -583,6 +821,40 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         })
         return
       }
+      if (
+        (action === 'group-layout-free' ||
+          action === 'group-layout-vertical' ||
+          action === 'group-layout-horizontal') &&
+        primary.type === 'group'
+      ) {
+        const mode: GroupLayoutMode =
+          action === 'group-layout-free'
+            ? 'free'
+            : action === 'group-layout-vertical'
+              ? 'vertical'
+              : 'horizontal'
+        const currentData = primary.data as GroupNodeData
+        if ((currentData.layoutMode ?? 'free') === mode) return
+        const nextData: GroupNodeData = { ...currentData, layoutMode: mode }
+        // Update local state immediately so the directed layout pass picks
+        // it up on the very next fit (handled in handleNodesChange below by
+        // re-running fitGroupsToChildren on the updated node).
+        setNodes((curr) => {
+          const next = curr.map((n) =>
+            n.id === primary.id ? ({ ...n, data: nextData } as GitcanvasFlowNode) : n,
+          )
+          const fit = fitGroupsToChildren(next)
+          if (fit.changes.length > 0) {
+            for (const c of fit.changes) {
+              updateNode.mutate({ id: c.id, patch: { position: c.position, size: c.size } })
+            }
+            return fit.nodes
+          }
+          return next
+        })
+        updateNode.mutate({ id: primary.id, patch: { data: nextData } })
+        return
+      }
       if (action === 'delete') {
         const idsToDelete = new Set(targetNodes.map((n) => n.id))
         for (const id of idsToDelete) {
@@ -591,7 +863,7 @@ function CanvasInner({ board, syncToken = 0, selectedRepoId, onSelectRepoNode }:
         setNodes((curr) => curr.filter((n) => !idsToDelete.has(n.id)))
       }
     },
-    [removeNode, board.id],
+    [removeNode, board.id, setRepoArchived, fitGroupsToChildren, updateNode],
   )
 
   // Apply visual selection ring on the currently-selected repo node, then

@@ -25,6 +25,7 @@ const groupDataSchema = z.object({
   color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, 'Expected hex color like #7c3aed'),
+  layoutMode: z.enum(['free', 'vertical', 'horizontal']).optional(),
 })
 
 const repoNodeDataSchema = z.object({
@@ -34,6 +35,7 @@ const repoNodeDataSchema = z.object({
     .optional(),
   showBranchDetails: z.boolean().optional(),
   showAnnotations: z.boolean().optional(),
+  notes: z.string().max(2000).optional(),
 })
 
 const createInput = z.object({

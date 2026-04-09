@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
-import { Circle, Coins, ExternalLink, FolderGit2, GitBranch, Globe } from 'lucide-react'
+import { Archive, Circle, Coins, ExternalLink, FolderGit2, GitBranch, Globe } from 'lucide-react'
 import clsx from 'clsx'
 import type { BranchStatus, Chain, RepoAnnotation } from '@gitcanvas/shared'
 import { useLocalStatus, useRepo, useRepoBranches } from '@renderer/features/repos/useRepos'
@@ -106,6 +106,8 @@ function RepoNodeImpl({ data, selected }: NodeProps<RepoFlowNode>) {
   }
 
   const r = repo.data
+  const archived = r.archived
+  const notes = data.notes?.trim()
 
   return (
     <div className="relative h-full w-full">
@@ -118,28 +120,76 @@ function RepoNodeImpl({ data, selected }: NodeProps<RepoFlowNode>) {
       />
 
       {/* Inner clipping layer — keeps the colored chrome inside the node bounds
-          but lets NodeResizer's handles render at the corners outside any clip. */}
+          but lets NodeResizer's handles render at the corners outside any clip.
+
+          Archived treatment: warm orange tint + amber border + small badge,
+          chosen for sufficient contrast on the dark canvas. We avoid simply
+          fading the node (low opacity hurts readability) and instead lean on
+          a saturated accent color. The selection ring still wins because it's
+          a higher-priority interaction state. */}
       <div
         className={clsx(
-          'absolute inset-0 flex flex-col overflow-hidden rounded-xl border bg-zinc-900 text-zinc-200 shadow-md transition',
-          selected ? 'border-violet-500 ring-2 ring-violet-500/30' : 'border-zinc-800',
+          'absolute inset-0 flex flex-col overflow-hidden rounded-xl border text-zinc-200 shadow-md transition',
+          archived
+            ? selected
+              ? 'border-violet-500 bg-orange-950/40 ring-2 ring-violet-500/30'
+              : 'border-orange-500/80 bg-orange-950/30'
+            : selected
+              ? 'border-violet-500 bg-zinc-900 ring-2 ring-violet-500/30'
+              : 'border-zinc-800 bg-zinc-900',
         )}
       >
         <header className="flex items-start gap-2 px-3 pb-1.5 pt-2">
-          <div className="mt-0.5 shrink-0 text-zinc-500">
+          <div className={clsx('mt-0.5 shrink-0', archived ? 'text-orange-400' : 'text-zinc-500')}>
             <FolderGit2 size={14} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold leading-tight text-zinc-100">
-              {r.name}
+            <div
+              className={clsx(
+                'flex items-center gap-1.5 truncate text-sm font-semibold leading-tight',
+                archived ? 'text-orange-100' : 'text-zinc-100',
+              )}
+            >
+              <span className="truncate">{r.name}</span>
+              {archived && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-sm bg-orange-500/20 px-1 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-orange-300"
+                  title="This repo is archived"
+                >
+                  <Archive size={8} aria-hidden />
+                  Archived
+                </span>
+              )}
             </div>
-            <div className="truncate text-[11px] text-zinc-500">{r.owner}</div>
+            <div className={clsx('truncate text-[11px]', archived ? 'text-orange-400/80' : 'text-zinc-500')}>
+              {r.owner}
+            </div>
           </div>
         </header>
 
+        {/* Per-instance notes — sits directly under the title/folder header so
+            the user-typed context is the first thing read after the name. */}
+        {notes && (
+          <div
+            className={clsx(
+              'whitespace-pre-wrap break-words border-t px-3 py-1.5 text-[11px] leading-snug',
+              archived
+                ? 'border-orange-900/50 text-orange-100/90'
+                : 'border-zinc-800 text-zinc-300',
+            )}
+          >
+            {notes}
+          </div>
+        )}
+
         {/* Pinned branches with optional inline annotations under each. */}
         {shouldRenderBranches && (
-          <ul className="space-y-0.5 border-t border-zinc-800 px-3 py-1.5">
+          <ul
+            className={clsx(
+              'space-y-0.5 border-t px-3 py-1.5',
+              archived ? 'border-orange-900/50' : 'border-zinc-800',
+            )}
+          >
             {branches.isLoading && (
               <li className="text-[10px] text-zinc-600">loading branches…</li>
             )}
@@ -183,7 +233,12 @@ function RepoNodeImpl({ data, selected }: NodeProps<RepoFlowNode>) {
 
         {/* Repo-level annotations (not tied to any branch). */}
         {showAnnotations && repoLevelAnnotations.length > 0 && (
-          <div className="border-t border-zinc-800 px-3 py-1.5">
+          <div
+            className={clsx(
+              'border-t px-3 py-1.5',
+              archived ? 'border-orange-900/50' : 'border-zinc-800',
+            )}
+          >
             <div className="text-[9px] font-semibold uppercase tracking-wider text-zinc-600">
               Repo-level
             </div>

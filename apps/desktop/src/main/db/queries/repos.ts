@@ -15,6 +15,8 @@ function rowToRepo(row: RepoRow): Repo {
     defaultBranch: row.defaultBranch,
     localPath: row.localPath,
     topics: row.topics,
+    // SQLite stores 0/1; coerce to a real JS boolean for the IPC contract.
+    archived: row.archived === 1,
     createdAt: row.createdAt,
   }
 }
@@ -95,4 +97,17 @@ export function upsertLocalRepo(input: {
 export function deleteRepo(id: string): void {
   const db = getDb()
   db.delete(repos).where(eq(repos.id, id)).run()
+}
+
+/**
+ * Flip the global `archived` flag on a single repo. Returns the updated row
+ * so the IPC handler can hand it back to the renderer cache directly.
+ */
+export function setRepoArchived(id: string, archived: boolean): Repo {
+  const db = getDb()
+  // Write 0/1 explicitly — the column is a plain integer (see schema.ts).
+  db.update(repos).set({ archived: archived ? 1 : 0 }).where(eq(repos.id, id)).run()
+  const row = db.select().from(repos).where(eq(repos.id, id)).get()
+  if (!row) throw new Error(`Repo ${id} not found`)
+  return rowToRepo(row)
 }

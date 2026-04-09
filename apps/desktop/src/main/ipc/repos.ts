@@ -130,4 +130,10 @@ export function registerRepoHandlers(): void {
   registerHandler('repos.delete', z.object({ id: ulidSchema }), ({ id }) => {
     reposQ.deleteRepo(id)
   })
+
+  registerHandler(
+    'repos.setArchived',
+    z.object({ id: ulidSchema, archived: z.boolean() }),
+    ({ id, archived }) => reposQ.setRepoArchived(id, archived),
+  )
 }

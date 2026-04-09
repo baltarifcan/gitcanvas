@@ -99,6 +99,11 @@ export type IpcContract = {
   'repos.localStatus': { request: { repoId: ID }; response: LocalGitStatus }
   'repos.branches': { request: { repoId: ID }; response: BranchStatus[] }
   'repos.delete': { request: { id: ID }; response: void }
+  /**
+   * Toggle the global "archived" flag on a repo. Returns the updated row so
+   * the renderer can patch its cache without a refetch.
+   */
+  'repos.setArchived': { request: { id: ID; archived: boolean }; response: Repo }
 
   // ── Repository lists (org-level collections) ──────────────────────────────
   'lists.list': { request: void; response: RepoList[] }
@@ -200,6 +205,7 @@ export const IPC_CHANNELS = [
   'repos.localStatus',
   'repos.branches',
   'repos.delete',
+  'repos.setArchived',
   'lists.list',
   'lists.get',
   'lists.create',

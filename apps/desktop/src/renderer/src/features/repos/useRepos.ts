@@ -76,6 +76,26 @@ export function useScanLocal() {
   })
 }
 
+export function useSetRepoArchived() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { id: string; archived: boolean }) => api.repos.setArchived(input),
+    onSuccess: (repo) => {
+      // Patch both the single-repo cache and the list cache so every node
+      // referencing this repo repaints immediately.
+      qc.setQueryData<Repo>(repoKey(repo.id), repo)
+      qc.setQueryData<Repo[]>(reposKey, (prev) =>
+        prev ? prev.map((r) => (r.id === repo.id ? repo : r)) : prev,
+      )
+    },
+    onError: (err) => {
+      // Surface IPC / DB failures to devtools — silent failures here are
+      // confusing because the menu just closes with no visible effect.
+      console.error('[useSetRepoArchived] failed', err)
+    },
+  })
+}
+
 export function useDeleteRepo() {
   const qc = useQueryClient()
   return useMutation({

@@ -25,6 +25,12 @@ export type Repo = {
   /** Absolute filesystem path. Required — every repo is local. */
   localPath: string
   topics: string[]
+  /**
+   * User-flagged "this repo is retired". Global to the repo (not per
+   * board-instance) so it propagates everywhere the repo is referenced.
+   * Repo nodes render with an accessible orange treatment when true.
+   */
+  archived: boolean
   createdAt: ISODateString
 }
 
@@ -191,10 +197,29 @@ export type NoteNodeData = {
   content: string
 }
 
+/**
+ * How a group arranges its direct children:
+ *
+ *   `free`       — children float freely; user positions each one (default).
+ *   `vertical`   — children stack top-to-bottom inside the group.
+ *   `horizontal` — children stack left-to-right inside the group.
+ *
+ * For `vertical` / `horizontal`, child positions are recomputed by the canvas
+ * layout pass on every fit, so dragging a child within a directed group is
+ * effectively a "no-op" — the user reorders by dragging children past each
+ * other along the layout axis.
+ */
+export type GroupLayoutMode = 'free' | 'vertical' | 'horizontal'
+
 export type GroupNodeData = {
   label: string
   /** Hex color, e.g. `#7c3aed`. */
   color: string
+  /**
+   * Layout strategy for direct children. Defaults to `free` when omitted so
+   * pre-existing groups keep their freeform behavior.
+   */
+  layoutMode?: GroupLayoutMode
 }
 
 /**
@@ -222,6 +247,12 @@ export type RepoNodeData = {
   showBranchDetails?: boolean
   /** Render annotations (domain url, smart contract chain+address, etc.) inline. Default false. */
   showAnnotations?: boolean
+  /**
+   * Free-form per-instance notes shown on the node directly under the title /
+   * folder header. Per-instance (not on `Repo`) so the same repo can carry
+   * board-specific commentary on different boards.
+   */
+  notes?: string
 }
 
 type BaseNode = {

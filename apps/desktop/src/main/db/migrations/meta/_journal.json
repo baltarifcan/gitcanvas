@@ -36,6 +36,13 @@
       "when": 1775890000000,
       "tag": "0004_repo_lists",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1775900000000,
+      "tag": "0005_repo_archived",
+      "breakpoints": true
     }
   ]
 }
